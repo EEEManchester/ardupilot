@@ -116,7 +116,12 @@ class VehicleInfo(object):
                 "waf_target": "bin/arducopter",
                 "default_params_filename": ["default_params/copter.parm",
                                             "default_params/gazebo-iris.parm"],
-            },
+           },
+            "gazebo-mimree": {
+                "waf_target": "bin/arducopter",
+                "default_params_filename": ["default_params/copter.parm",
+                                            "default_params/gazebo-mimree.parm"], 
+	   },
             "airsim-copter": {
                 "waf_target": "bin/arducopter",
                 "default_params_filename": ["default_params/copter.parm",
