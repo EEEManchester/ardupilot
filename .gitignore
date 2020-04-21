@@ -126,3 +126,4 @@ segv_*out
 /ArduSub/scripts/
 persistent.dat
 dumpstack_*out
+ArduCopter/dumpstack_arducopter.*
