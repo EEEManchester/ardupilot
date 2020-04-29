@@ -706,7 +706,8 @@ class AutoTest(ABC):
                  disable_breakpoints=False,
                  viewerip=None,
                  use_map=False,
-                 _show_test_timings=False):
+                 _show_test_timings=False,
+                 force_ahrs_type=None):
 
         if binary is None:
             raise ValueError("Should always have a binary")
@@ -740,6 +741,9 @@ class AutoTest(ABC):
         self.test_timings = dict()
         self.total_waiting_to_arm_time = 0
         self.waiting_to_arm_count = 0
+        self.force_ahrs_type = force_ahrs_type
+        if self.force_ahrs_type is not None:
+            self.force_ahrs_type = int(self.force_ahrs_type)
 
     @staticmethod
     def progress(text):
@@ -848,6 +852,12 @@ class AutoTest(ABC):
             self.repeatedly_apply_parameter_file(os.path.join(testdir, x))
         self.set_parameter('LOG_REPLAY', 1)
         self.set_parameter('LOG_DISARMED', 1)
+        if self.force_ahrs_type is not None:
+            if self.force_ahrs_type == 2:
+                self.set_parameter("EK2_ENABLE", 1)
+            if self.force_ahrs_type == 3:
+                self.set_parameter("EK3_ENABLE", 1)
+            self.set_parameter("AHRS_EKF_TYPE", self.force_ahrs_type)
         self.reboot_sitl()
         self.fetch_parameters()
 
@@ -873,7 +883,7 @@ class AutoTest(ABC):
 
     def load_fence_using_mavproxy(self, filename):
         self.set_parameter("FENCE_TOTAL", 0)
-        filepath = os.path.join(self.mission_directory(), filename)
+        filepath = os.path.join(testdir, self.current_test_name_directory, filename)
         count = self.count_expected_fence_lines_in_filepath(filepath)
         self.mavproxy.send('fence load %s\n' % filepath)
 #        self.mavproxy.expect("Loaded %u (geo-)?fence" % count)
@@ -1068,7 +1078,7 @@ class AutoTest(ABC):
         return ret
 
     def vehicle_code_dirpath(self):
-        '''returns path to vehicle-specific code directory e.g. ~/ardupilot/APMrover2'''
+        '''returns path to vehicle-specific code directory e.g. ~/ardupilot/Rover'''
         dirname = self.log_name()
         if dirname == "QuadPlane":
             dirname = "ArduPlane"
@@ -1226,16 +1236,22 @@ class AutoTest(ABC):
                     if not re.search("[.]cpp$", f):
                         continue
                     filepath = os.path.join(root, f)
+                    if "AP_Logger/examples" in filepath:
+                        # this is the sample file which contains examples...
+                        continue
                     count = 0
                     for line in open(filepath,'rb').readlines():
                         if type(line) == bytes:
                             line = line.decode("utf-8")
                         if state == state_outside:
-                            if re.match("\s*AP::logger\(\)[.]Write\(", line):
+                            if (re.match("\s*AP::logger\(\)[.]Write\(", line) or
+                                re.match("\s*logger[.]Write\(", line)):
                                 state = state_inside
+                                line = re.sub("//.*", "", line) # trim comments
                                 log_write_statement = line
                             continue
                         if state == state_inside:
+                            line = re.sub("//.*", "", line) # trim comments
                             log_write_statement += line
                             if re.match(".*\);", line):
                                 log_write_statements.append(log_write_statement)
@@ -1251,8 +1267,13 @@ class AutoTest(ABC):
         for log_write_statement in log_write_statements:
             for define in defines:
                 log_write_statement = re.sub(define, defines[define], log_write_statement)
-            my_re = ' AP::logger\(\)[.]Write\(\s*"(\w+)"\s*,\s*"([\w,]+)".*\);'
+            # fair warning: order is important here because of the
+            # NKT/XKT special case below....
+            my_re = ' logger[.]Write\(\s*"(\w+)"\s*,\s*"([\w,]+)".*\);'
             m = re.match(my_re, log_write_statement)
+            if m is None:
+                my_re = ' AP::logger\(\)[.]Write\(\s*"(\w+)"\s*,\s*"([\w,]+)".*\);'
+                m = re.match(my_re, log_write_statement)
             if m is None:
                 if "TimeUS,C,Cnt,IMUMin,IMUMax,EKFMin" in log_write_statement:
                     # special-case for logging ekf timing:
@@ -1263,7 +1284,7 @@ class AutoTest(ABC):
                             raise NotAchievedException("Did not match (%s)", x)
                         results.append((m.group(1), m.group(2)))
                     continue
-                raise NotAchievedException("Did not match (%s)" % (log_write_statement))
+                raise NotAchievedException("Did not match (%s) with (%s)" % (log_write_statement, str(my_re)))
             else:
                 results.append((m.group(1), m.group(2)))
 
@@ -1296,7 +1317,7 @@ class AutoTest(ABC):
             "HeliCopter": "Copter",
             "ArduPlane": "Plane",
             "QuadPlane": "Plane",
-            "APMrover2": "Rover",
+            "Rover": "Rover",
             "AntennaTracker": "Tracker",
             "ArduSub": "Sub",
         }
@@ -1334,17 +1355,22 @@ class AutoTest(ABC):
                 docco_ids[name]["labels"].append(fieldname)
 
         code_ids = self.all_log_format_ids()
-        print("Code ids: (%s)" % str(code_ids.keys()))
-        print("Docco ids: (%s)" % str(docco_ids.keys()))
+        print("Code ids: (%s)" % str(sorted(code_ids.keys())))
+        print("Docco ids: (%s)" % str(sorted(docco_ids.keys())))
 
         for name in sorted(code_ids.keys()):
             if name not in docco_ids:
-                self.progress("Undocumented message: %s" % name)
+                self.progress("Undocumented message: %s" % str(name))
                 continue
+            seen_labels = {}
             for label in code_ids[name]["labels"].split(","):
-                if label not in docco_ids[name]["labels"]:
-                    raise NotAchievedException("%s.%s not in documented fields" %
+                if label in seen_labels:
+                    raise NotAchievedException("%s.%s is duplicate label" %
                                                (name, label))
+                seen_labels[label] = True
+                if label not in docco_ids[name]["labels"]:
+                    raise NotAchievedException("%s.%s not in documented fields (have (%s))" %
+                                               (name, label, ",".join(docco_ids[name]["labels"])))
         for name in sorted(docco_ids):
             if name not in code_ids:
                 raise NotAchievedException("Documented message (%s) not in code" % name)
@@ -1362,11 +1388,14 @@ class AutoTest(ABC):
         self.set_streamrate(self.sitl_streamrate())
         self.progress("Reboot complete")
 
-    def customise_SITL_commandline(self, customisations):
+    def customise_SITL_commandline(self, customisations, model=None, defaults_filepath=None):
         '''customisations could be "--uartF=sim:nmea" '''
         self.contexts[-1].sitl_commandline_customised = True
         self.stop_SITL()
-        self.start_SITL(customisations=customisations, wipe=False)
+        self.start_SITL(model=model,
+                        defaults_filepath=defaults_filepath,
+                        customisations=customisations,
+                        wipe=False)
         self.wait_heartbeat(drain_mav=True)
         # MAVProxy only checks the streamrates once every 15 seconds.
         # Encourage it:
@@ -1602,14 +1631,26 @@ class AutoTest(ABC):
         this_dir = os.path.dirname(__file__)
         return os.path.realpath(os.path.join(this_dir, "../.."))
 
-    def mission_directory(self):
-        return testdir
-
-    def assert_mission_files_same(self, file1, file2):
+    def assert_mission_files_same(self, file1, file2, match_comments=False):
         self.progress("Comparing (%s) and (%s)" % (file1, file2, ))
+
         f1 = open(file1)
         f2 = open(file2)
-        for l1, l2 in zip(f1, f2):
+        lines1 = f1.readlines()
+        lines2 = f2.readlines()
+
+        if not match_comments:
+            # strip comments from all lines
+            lines1 = [re.sub(r"\s*#.*", "", x, re.DOTALL) for x in lines1]
+            lines2 = [re.sub(r"\s*#.*", "", x, re.DOTALL) for x in lines2]
+            # FIXME: because DOTALL doesn't seem to work as expected:
+            lines1 = [x.rstrip() for x in lines1]
+            lines2 = [x.rstrip() for x in lines2]
+            # remove now-empty lines:
+            lines1 = filter(lambda x : len(x), lines1)
+            lines2 = filter(lambda x : len(x), lines2)
+
+        for l1, l2 in zip(lines1, lines2):
             l1 = l1.rstrip("\r\n")
             l2 = l2.rstrip("\r\n")
             if l1 == l2:
@@ -1632,11 +1673,12 @@ class AutoTest(ABC):
                              mavutil.mavlink.MAV_CMD_NAV_LOITER_TIME,
                              mavutil.mavlink.MAV_CMD_DO_JUMP,
                              mavutil.mavlink.MAV_CMD_DO_DIGICAM_CONTROL,
+                             mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
                              ]:
                         # ardupilot doesn't remember frame on these commands
-                        if int(i1) == 3:
+                        if int(i1) in [3, 10]: # 3 is relative, 10 is AMSL
                             i1 = 0
-                        if int(i2) == 3:
+                        if int(i2) in [3, 10]:
                             i2 = 0
                 if count == 6: # param 3
                     if t in [mavutil.mavlink.MAV_CMD_NAV_LOITER_TIME]:
@@ -1773,7 +1815,7 @@ class AutoTest(ABC):
     def load_rally(self, filename):
         """Load rally points from a file to flight controller."""
         self.progress("Loading rally points (%s)" % filename)
-        path = os.path.join(self.mission_directory(), filename)
+        path = os.path.join(testdir, self.current_test_name_directory, filename)
         self.mavproxy.send('rally load %s\n' % path)
         self.mavproxy.expect("Loaded")
 
@@ -1781,9 +1823,12 @@ class AutoTest(ABC):
         self.load_mission(self.sample_mission_filename())
 
     def load_mission(self, filename):
+        return self.load_mission_from_filepath(self.current_test_name_directory, filename)
+
+    def load_mission_from_filepath(self, filepath, filename):
         """Load a mission from a file to flight controller."""
         self.progress("Loading mission (%s)" % filename)
-        path = os.path.join(self.mission_directory(), filename)
+        path = os.path.join(testdir, filepath, filename)
         tstart = self.get_sim_time_cached()
         while True:
             t2 = self.get_sim_time_cached()
@@ -1990,7 +2035,10 @@ class AutoTest(ABC):
         """Load arming test mission.
         This mission is used to allow to change mode to AUTO. For each vehicle
         it get an unlimited wait waypoint and the starting takeoff if needed."""
-        return None
+        if self.is_rover() or self.is_plane() or self.is_sub():
+            return os.path.join(testdir, self.current_test_name_directory + "test_arming.txt")
+        else:
+            return None
 
     def armed(self):
         """Return true if vehicle is armed and safetyoff"""
@@ -2094,6 +2142,8 @@ class AutoTest(ABC):
         '''Most vehicles just disarm on failsafe'''
         # customising the SITL commandline ensures the process will
         # get stopped/started at the end of the test
+        if self.frame is None:
+            raise ValueError("Frame is none?")
         self.customise_SITL_commandline([])
         self.wait_ready_to_arm()
         self.arm_vehicle()
@@ -3266,7 +3316,7 @@ class AutoTest(ABC):
         prettyname = "%s (%s)" % (name, desc)
         self.send_statustext(prettyname)
         self.start_test(prettyname)
-
+        self.set_current_test_name(name)
         self.context_push()
 
         start_time = time.time()
@@ -3361,18 +3411,22 @@ class AutoTest(ABC):
         start_sitl_args = {
             "breakpoints": self.breakpoints,
             "disable_breakpoints": self.disable_breakpoints,
-            "defaults_file": self.defaults_filepath(),
             "gdb": self.gdb,
             "gdbserver": self.gdbserver,
             "lldb": self.lldb,
             "home": self.sitl_home(),
-            "model": self.frame,
             "speedup": self.speedup,
             "valgrind": self.valgrind,
             "vicon": self.uses_vicon(),
             "wipe": True,
         }
         start_sitl_args.update(**sitl_args)
+        if ("defaults_filepath" not in start_sitl_args or
+            start_sitl_args["defaults_filepath"] is None):
+            start_sitl_args["defaults_filepath"] = self.defaults_filepath()
+
+        if "model" not in start_sitl_args or start_sitl_args["model"] is None:
+            start_sitl_args["model"] = self.frame
         self.progress("Starting SITL")
         self.sitl = util.start_SITL(self.binary, **start_sitl_args)
 
@@ -3387,6 +3441,9 @@ class AutoTest(ABC):
 
         if self.frame is None:
             self.frame = self.default_frame()
+
+        if self.frame is None:
+            raise ValueError("frame must not be None")
 
         self.progress("Starting simulator")
         self.start_SITL()
@@ -5515,3 +5572,14 @@ switch value'''
         psd["F"] = freqmap
 
         return psd
+
+    def model_defaults_filepath(self, vehicle, model):
+
+        vinfo = vehicleinfo.VehicleInfo()
+        defaults_filepath = vinfo.options[vehicle]["frames"][model]["default_params_filename"]
+        if isinstance(defaults_filepath, str):
+            defaults_filepath = [defaults_filepath]
+        defaults_list = []
+        for d in defaults_filepath:
+            defaults_list.append(os.path.join(testdir, d))
+        return ','.join(defaults_list)

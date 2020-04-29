@@ -166,20 +166,20 @@ class VehicleInfo(object):
                             "default_params/gazebo-iris.parm"
                         ],
                     },
-                    "gazebo-mimree": {
-                        "waf_target":
-                        "bin/arducopter",
-                        "default_params_filename": [
-                            "default_params/copter.parm",
-                            "default_params/gazebo-mimree.parm"
-                        ],
-                    },
                     "airsim-copter": {
                         "waf_target":
                         "bin/arducopter",
                         "default_params_filename": [
                             "default_params/copter.parm",
                             "default_params/airsim-quadX.parm"
+                        ],
+                    },
+                    "gazebo-mimree": {
+                        "waf_target":
+                        "bin/arducopter",
+                        "default_params_filename": [
+                            "default_params/copter.parm",
+                            "default_params/gazebo-mimree.parm"
                         ],
                     },
                     # HELICOPTER
@@ -332,6 +332,14 @@ class VehicleInfo(object):
                             "default_params/plane-dspoilers.parm"
                         ]
                     },
+                    "plane-soaring": {
+                        "waf_target":
+                        "bin/arduplane",
+                        "default_params_filename": [
+                            "default_params/plane.parm",
+                            "default_params/plane-soaring.parm"
+                        ]
+                    },
                     "gazebo-zephyr": {
                         "waf_target":
                         "bin/arduplane",
@@ -360,7 +368,7 @@ class VehicleInfo(object):
                     },
                 },
             },
-            "APMrover2": {
+            "Rover": {
                 "default_frame": "rover",
                 "frames": {
                     # ROVER
